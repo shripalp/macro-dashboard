@@ -43,7 +43,7 @@ def load_market_data():
 
 @st.cache_data(ttl=60)
 def load_live_prices():
-    """Fetch near-real-time prices and the previous close for dashboard cards."""
+    """Fetch the latest available price and its change from the prior close."""
     symbols = {
         'Gold': 'GC=F',
         'Oil': 'CL=F',
@@ -54,18 +54,33 @@ def load_live_prices():
     quotes = {}
 
     for name, symbol in symbols.items():
-        ticker = yf.Ticker(symbol)
-        intraday = ticker.history(period='1d', interval='1m', auto_adjust=False)
-        daily = ticker.history(period='5d', interval='1d', auto_adjust=False)
+        try:
+            ticker = yf.Ticker(symbol)
+            intraday = ticker.history(period='1d', interval='1m', auto_adjust=False)
+            daily = ticker.history(period='5d', interval='1d', auto_adjust=False)
+            daily_closes = daily['Close'].dropna() if not daily.empty else pd.Series(dtype=float)
+            intraday_closes = intraday['Close'].dropna() if not intraday.empty else pd.Series(dtype=float)
 
-        if intraday.empty or daily.empty:
-            raise ValueError(f"No current price available for {name} ({symbol})")
+            if not intraday_closes.empty:
+                current_price = float(intraday_closes.iloc[-1])
+                previous_close = float(daily_closes.iloc[-2] if len(daily_closes) > 1 else daily_closes.iloc[-1])
+                source = 'intraday'
+            elif not daily_closes.empty:
+                current_price = float(daily_closes.iloc[-1])
+                previous_close = float(daily_closes.iloc[-2] if len(daily_closes) > 1 else current_price)
+                source = 'daily close'
+            else:
+                quotes[name] = None
+                continue
 
-        current_price = float(intraday['Close'].dropna().iloc[-1])
-        daily_closes = daily['Close'].dropna()
-        previous_close = float(daily_closes.iloc[-2] if len(daily_closes) > 1 else daily_closes.iloc[-1])
-        change_pct = ((current_price - previous_close) / previous_close) * 100
-        quotes[name] = {'price': current_price, 'change_pct': change_pct}
+            change_pct = ((current_price - previous_close) / previous_close) * 100
+            quotes[name] = {
+                'price': current_price,
+                'change_pct': change_pct,
+                'source': source,
+            }
+        except Exception:
+            quotes[name] = None
 
     return quotes
 
@@ -129,13 +144,17 @@ try:
 
     for column, name in zip(price_columns, price_formats):
         quote = live_prices[name]
-        column.metric(
-            label=name,
-            value=price_formats[name].format(quote['price']),
-            delta=f"{quote['change_pct']:+.2f}% vs previous close",
-        )
+        if quote is None:
+            column.metric(label=name, value="Unavailable")
+        else:
+            column.metric(
+                label=name,
+                value=price_formats[name].format(quote['price']),
+                delta=f"{quote['change_pct']:+.2f}% vs previous close",
+                help=f"Latest {quote['source']} price from Yahoo Finance.",
+            )
 
-    st.caption("Near-real-time Yahoo Finance quotes; exchange delays may apply. Gold and oil use front-month futures.")
+    st.caption("Latest available Yahoo Finance quotes; exchange delays may apply. Daily closes are used when intraday quotes are unavailable. Gold and oil use front-month futures.")
     
     # 4 Dial Summary Cards
     st.markdown("---")
