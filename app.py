@@ -38,6 +38,10 @@ def load_market_data():
     boj_assets = fred.get_series('JPNASSETS', observation_start=start_date)  # BOJ assets, 100 million yen
     eur_usd = fred.get_series('DEXUSEU', observation_start=start_date)       # US dollars per euro
     yen_usd = fred.get_series('DEXJPUS', observation_start=start_date)       # Yen per US dollar
+    wti = fred.get_series('DCOILWTICO', observation_start=start_date)         # WTI crude oil, dollars per barrel
+    cpi = fred.get_series('CPIAUCSL', observation_start=start_date)           # Consumer Price Index
+    nominal_10y = fred.get_series('DGS10', observation_start=start_date)      # Nominal 10Y Treasury yield
+    credit_spread = fred.get_series('BAMLH0A0HYM2', observation_start=start_date) # High-yield credit spread
     
     df_macro = pd.DataFrame({
         'Fed_Assets': walcl,
@@ -51,6 +55,10 @@ def load_market_data():
         'BOJ_Assets': boj_assets,
         'EUR_USD': eur_usd,
         'YEN_USD': yen_usd,
+        'WTI': wti,
+        'CPI': cpi,
+        'Nominal_10Y': nominal_10y,
+        'Credit_Spread': credit_spread,
     }).sort_index().ffill().dropna()
     
     # Convert RRP from billions to millions before calculating liquidity in trillions.
@@ -66,7 +74,7 @@ def load_market_data():
     )
     
     # Asset Prices (Daily)
-    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'QQQ', 'BIL']
+    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD', 'QQQ', 'BIL']
     prices = yf.download(tickers, start=start_date, auto_adjust=False)['Close']
     
     merged = pd.concat([df_macro, prices], axis=1, sort=False).sort_index().ffill().dropna()
@@ -115,11 +123,51 @@ def load_live_prices():
 
     return quotes
 
+def classify_outlook(score, asset_name):
+    """Translate a five-point regime score into a plain-language outlook."""
+    if score >= 4:
+        return 'Strongly Supportive', '🟢', f"Most measured macro and trend signals favor {asset_name}."
+    if score >= 2:
+        return 'Moderately Supportive', '🟢', f"More indicators support {asset_name} than oppose it, but the signal is not unanimous."
+    if score >= -1:
+        return 'Mixed / Neutral', '⚪', f"The indicators disagree, so there is no strong directional signal for {asset_name}."
+    if score >= -3:
+        return 'Unfavorable', '🟠', f"More indicators oppose {asset_name} than support it; conditions warrant caution."
+    return 'Strongly Unfavorable', '🔴', f"Most measured indicators currently create a difficult backdrop for {asset_name}."
+
+def render_signal_panel(asset_name, symbol, signals, current_price, four_week_price):
+    """Render one asset's score, outlook, price confirmation, and factor table."""
+    score = sum(signal['Score'] for signal in signals)
+    outlook, badge, description = classify_outlook(score, asset_name)
+    price_change = ((current_price - four_week_price) / four_week_price) * 100
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric(f"{asset_name} Score", f"{score:+.0f} / 5")
+    col_b.metric("Macro Outlook", f"{badge} {outlook}")
+    col_c.metric(
+        f"{symbol} Price",
+        f"${current_price:,.0f}" if current_price >= 1_000 else f"${current_price:,.2f}",
+        f"{price_change:+.2f}% (4 weeks)",
+    )
+
+    st.info(f"**What it means:** {description}")
+    signal_table = pd.DataFrame(signals)
+    signal_table['Signal'] = signal_table['Score'].apply(
+        lambda value: f"✅ Supportive (+{value:g})" if value > 0 else f"❌ Unfavorable ({value:g})"
+    )
+    st.dataframe(
+        signal_table[['Factor', 'Signal', 'Reading', 'Supportive when']],
+        width='stretch',
+        hide_index=True,
+    )
+
 try:
     data = load_market_data()
     latest = data.iloc[-1]
     four_weeks_ago = data.loc[data.index <= data.index[-1] - timedelta(days=28)].iloc[-1]
     thirteen_weeks_ago = data.loc[data.index <= data.index[-1] - timedelta(days=91)].iloc[-1]
+    one_year_ago = data.loc[data.index <= data.index[-1] - timedelta(days=365)].iloc[-1]
+    fifteen_months_ago = data.loc[data.index <= data.index[-1] - timedelta(days=456)].iloc[-1]
     
     # Rate of Change / Metrics
     liq_change_30d = ((latest['Net_Liquidity'] - four_weeks_ago['Net_Liquidity']) / four_weeks_ago['Net_Liquidity']) * 100
@@ -130,8 +178,17 @@ try:
     real_rate_change = latest['Real_Rate'] - four_weeks_ago['Real_Rate']
     nfci_change = latest['NFCI'] - four_weeks_ago['NFCI']
     nfci_direction = 'tightening' if nfci_change > 0 else 'loosening' if nfci_change < 0 else 'flat'
+    dollar_change = latest['Dollar_Index'] - four_weeks_ago['Dollar_Index']
+    nominal_10y_change = latest['Nominal_10Y'] - four_weeks_ago['Nominal_10Y']
+    credit_spread_change = latest['Credit_Spread'] - four_weeks_ago['Credit_Spread']
+    current_inflation = ((latest['CPI'] / one_year_ago['CPI']) - 1) * 100
+    prior_inflation = ((thirteen_weeks_ago['CPI'] / fifteen_months_ago['CPI']) - 1) * 100
+    inflation_change = current_inflation - prior_inflation
     current_yc = latest['Yield_Curve']
-    btc_200d_average = data['BTC-USD'].tail(200).mean()
+    averages_200d = {
+        symbol: data[symbol].tail(200).mean()
+        for symbol in ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD']
+    }
 
     # US and global liquidity split one point to avoid double-counting liquidity.
     btc_signals = [
@@ -156,7 +213,7 @@ try:
         {
             'Factor': 'US dollar',
             'Score': 1 if latest['Dollar_Index'] < four_weeks_ago['Dollar_Index'] else -1,
-            'Reading': f"{latest['Dollar_Index'] - four_weeks_ago['Dollar_Index']:+.2f} over 4 weeks",
+            'Reading': f"{dollar_change:+.2f} over 4 weeks",
             'Supportive when': 'Falling',
         },
         {
@@ -167,58 +224,186 @@ try:
         },
         {
             'Factor': 'BTC price trend',
-            'Score': 1 if latest['BTC-USD'] > btc_200d_average else -1,
-            'Reading': f"${latest['BTC-USD']:,.0f} vs ${btc_200d_average:,.0f} 200D avg",
+            'Score': 1 if latest['BTC-USD'] > averages_200d['BTC-USD'] else -1,
+            'Reading': f"${latest['BTC-USD']:,.0f} vs ${averages_200d['BTC-USD']:,.0f} 200D avg",
             'Supportive when': 'Above 200D avg',
         },
     ]
-    btc_score = sum(signal['Score'] for signal in btc_signals)
 
-    if btc_score >= 4:
-        outlook = 'Strongly Supportive'
-        badge_color = '🟢'
-        regime_desc = 'Most measured liquidity, rates, currency, credit, and price-trend signals favor Bitcoin.'
-    elif btc_score >= 2:
-        outlook = 'Moderately Supportive'
-        badge_color = '🟢'
-        regime_desc = 'More indicators support Bitcoin than oppose it, but the signal is not unanimous.'
-    elif btc_score >= -1:
-        outlook = 'Mixed / Neutral'
-        badge_color = '⚪'
-        regime_desc = 'The indicators disagree, so there is no strong directional BTC signal.'
-    elif btc_score >= -3:
-        outlook = 'Unfavorable'
-        badge_color = '🟠'
-        regime_desc = 'More indicators oppose Bitcoin than support it; conditions warrant caution.'
-    else:
-        outlook = 'Strongly Unfavorable'
-        badge_color = '🔴'
-        regime_desc = 'Most measured indicators currently create a difficult backdrop for Bitcoin.'
+    gold_signals = [
+        {
+            'Factor': '10Y real yield',
+            'Score': 1 if real_rate_change < 0 else -1,
+            'Reading': f"{real_rate_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'US dollar',
+            'Score': 1 if dollar_change < 0 else -1,
+            'Reading': f"{dollar_change:+.2f} over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'Global liquidity proxy',
+            'Score': 1 if global_liq_change > 0 else -1,
+            'Reading': f"{global_liq_change:+.2f}% over 13 weeks",
+            'Supportive when': 'Rising',
+        },
+        {
+            'Factor': 'Inflation trend',
+            'Score': 1 if inflation_change > 0 else -1,
+            'Reading': f"{current_inflation:.2f}% YoY ({inflation_change:+.2f} pp vs 3 months ago)",
+            'Supportive when': 'Accelerating',
+        },
+        {
+            'Factor': 'GLD price trend',
+            'Score': 1 if latest['GLD'] > averages_200d['GLD'] else -1,
+            'Reading': f"${latest['GLD']:,.2f} vs ${averages_200d['GLD']:,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
+
+    oil_signals = [
+        {
+            'Factor': 'WTI price trend',
+            'Score': 1 if latest['WTI'] > data['WTI'].tail(200).mean() else -1,
+            'Reading': f"${latest['WTI']:,.2f} vs ${data['WTI'].tail(200).mean():,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+        {
+            'Factor': 'US dollar',
+            'Score': 1 if dollar_change < 0 else -1,
+            'Reading': f"{dollar_change:+.2f} over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'Inflation trend',
+            'Score': 1 if inflation_change > 0 else -1,
+            'Reading': f"{current_inflation:.2f}% YoY ({inflation_change:+.2f} pp vs 3 months ago)",
+            'Supportive when': 'Accelerating',
+        },
+        {
+            'Factor': 'Yield curve',
+            'Score': 1 if current_yc >= 0 else -1,
+            'Reading': f"{current_yc:+.2f}% (10Y - 2Y)",
+            'Supportive when': 'Normal / positive',
+        },
+        {
+            'Factor': 'USO price trend',
+            'Score': 1 if latest['USO'] > averages_200d['USO'] else -1,
+            'Reading': f"${latest['USO']:,.2f} vs ${averages_200d['USO']:,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
+
+    sp500_signals = [
+        {
+            'Factor': 'US net liquidity',
+            'Score': 1 if liq_change_30d > 0 else -1,
+            'Reading': f"{liq_change_30d:+.2f}% over 4 weeks",
+            'Supportive when': 'Rising',
+        },
+        {
+            'Factor': 'Financial conditions',
+            'Score': 1 if nfci_change < 0 else -1,
+            'Reading': f"{nfci_change:+.3f} over 4 weeks",
+            'Supportive when': 'Loosening',
+        },
+        {
+            'Factor': 'High-yield credit spread',
+            'Score': 1 if credit_spread_change < 0 else -1,
+            'Reading': f"{credit_spread_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'Yield curve',
+            'Score': 1 if current_yc >= 0 else -1,
+            'Reading': f"{current_yc:+.2f}% (10Y - 2Y)",
+            'Supportive when': 'Normal / positive',
+        },
+        {
+            'Factor': 'SPY price trend',
+            'Score': 1 if latest['SPY'] > averages_200d['SPY'] else -1,
+            'Reading': f"${latest['SPY']:,.2f} vs ${averages_200d['SPY']:,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
+
+    schd_relative_return = (
+        ((latest['SCHD'] / thirteen_weeks_ago['SCHD']) - 1)
+        - ((latest['SPY'] / thirteen_weeks_ago['SPY']) - 1)
+    ) * 100
+    dividend_signals = [
+        {
+            'Factor': '10Y nominal yield',
+            'Score': 1 if nominal_10y_change < 0 else -1,
+            'Reading': f"{nominal_10y_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'Yield curve',
+            'Score': 1 if current_yc >= 0 else -1,
+            'Reading': f"{current_yc:+.2f}% (10Y - 2Y)",
+            'Supportive when': 'Normal / positive',
+        },
+        {
+            'Factor': 'High-yield credit spread',
+            'Score': 1 if credit_spread_change < 0 else -1,
+            'Reading': f"{credit_spread_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'SCHD relative strength',
+            'Score': 1 if schd_relative_return > 0 else -1,
+            'Reading': f"{schd_relative_return:+.2f} pp vs SPY over 13 weeks",
+            'Supportive when': 'Outperforming SPY',
+        },
+        {
+            'Factor': 'SCHD price trend',
+            'Score': 1 if latest['SCHD'] > averages_200d['SCHD'] else -1,
+            'Reading': f"${latest['SCHD']:,.2f} vs ${averages_200d['SCHD']:,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
     
     st.title("Shripal's Macro Copilot: Everyday Market Regime")
     st.caption("A layman-friendly engine translating Federal Reserve and Treasury data into clear allocation decisions.")
     
-    # Transparent BTC scoring model
+    # Reusable asset-specific scoring models
     st.markdown("---")
-    st.subheader("Bitcoin Macro Signal")
-
-    col_a, col_b, col_c = st.columns(3)
-    col_a.metric("BTC Score", f"{btc_score:+.0f} / 5")
-    col_b.metric("BTC Outlook", f"{badge_color} {outlook}")
-    col_c.metric("4-Week Liquidity Shift", f"{liq_change_30d:+.2f}%", delta_color="normal")
-    
-    st.info(f"**What it means:** {regime_desc}")
-
-    signal_table = pd.DataFrame(btc_signals)
-    signal_table['Signal'] = signal_table['Score'].apply(
-        lambda score: f"✅ Supportive (+{score:g})" if score > 0 else f"❌ Unfavorable ({score:g})"
+    st.subheader("Asset Macro Signals")
+    btc_tab, gold_tab, oil_tab, sp500_tab, dividend_tab = st.tabs(
+        ["Bitcoin", "Gold", "Oil", "S&P 500", "High Dividend"]
     )
-    st.dataframe(
-        signal_table[['Factor', 'Signal', 'Reading', 'Supportive when']],
-        width='stretch',
-        hide_index=True,
-    )
-    st.caption("This is a market-regime indicator, not a BTC price forecast or investment recommendation.")
+
+    with btc_tab:
+        render_signal_panel(
+            "Bitcoin", "BTC", btc_signals,
+            latest['BTC-USD'], four_weeks_ago['BTC-USD'],
+        )
+    with gold_tab:
+        render_signal_panel(
+            "Gold", "GLD", gold_signals,
+            latest['GLD'], four_weeks_ago['GLD'],
+        )
+    with oil_tab:
+        render_signal_panel(
+            "Oil", "USO", oil_signals,
+            latest['USO'], four_weeks_ago['USO'],
+        )
+        st.caption("USO holds oil futures and may diverge from spot WTI because of futures-curve and roll effects.")
+    with sp500_tab:
+        render_signal_panel(
+            "S&P 500", "SPY", sp500_signals,
+            latest['SPY'], four_weeks_ago['SPY'],
+        )
+    with dividend_tab:
+        render_signal_panel(
+            "High Dividend", "SCHD", dividend_signals,
+            latest['SCHD'], four_weeks_ago['SCHD'],
+        )
+
+    st.caption("These are market-regime indicators, not price forecasts or investment recommendations.")
 
     # Near-real-time market prices
     st.markdown("---")
