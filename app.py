@@ -128,6 +128,8 @@ try:
         / thirteen_weeks_ago['Global_Liquidity']
     ) * 100
     real_rate_change = latest['Real_Rate'] - four_weeks_ago['Real_Rate']
+    nfci_change = latest['NFCI'] - four_weeks_ago['NFCI']
+    nfci_direction = 'tightening' if nfci_change > 0 else 'loosening' if nfci_change < 0 else 'flat'
     current_yc = latest['Yield_Curve']
     btc_200d_average = data['BTC-USD'].tail(200).mean()
 
@@ -160,7 +162,7 @@ try:
         {
             'Factor': 'Financial conditions',
             'Score': 1 if latest['NFCI'] < four_weeks_ago['NFCI'] else -1,
-            'Reading': f"{latest['NFCI'] - four_weeks_ago['NFCI']:+.3f} over 4 weeks",
+            'Reading': f"{nfci_change:+.3f} over 4 weeks",
             'Supportive when': 'Loosening',
         },
         {
@@ -277,11 +279,12 @@ try:
         help="Negative indicates recession risks within 6-18 months."
     )
     c5.metric(
-        label="Bitcoin Price (USD)", 
-        value=f"${latest['BTC-USD']:,.0f}", 
-        delta=f"{((latest['BTC-USD'] - four_weeks_ago['BTC-USD']) / four_weeks_ago['BTC-USD']) * 100:+.2f}% (4 weeks)"
+        label="Financial Conditions (NFCI)",
+        value=f"{latest['NFCI']:.3f}",
+        delta=f"{nfci_change:+.3f} {nfci_direction} (4 weeks)",
+        delta_color="inverse",
+        help="Negative values are looser than average; positive values are tighter. Falling is generally more supportive for risk assets."
     )
-
     # Interactive Chart
     st.markdown("---")
     st.subheader("Historical Context: US & Global Liquidity vs. Bitcoin & Gold")
