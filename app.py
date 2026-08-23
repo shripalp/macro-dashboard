@@ -51,7 +51,7 @@ try:
     real_rate_change = latest['Real_Rate'] - prev_30d['Real_Rate']
     current_yc = latest['Yield_Curve']
     
-    st.title("Macro Copilot: Everyday Market Regime")
+    st.title("Shripal's Macro Copilot: Everyday Market Regime")
     st.caption("A layman-friendly engine translating Federal Reserve and Treasury data into clear allocation decisions.")
     
     # Dynamic Regime Logic
