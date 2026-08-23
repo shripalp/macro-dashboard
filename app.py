@@ -17,26 +17,32 @@ def load_market_data():
     start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
     
     # FRED Macro Series
-    walcl = fred.get_series('WALCL')       # Fed Total Assets
-    tga = fred.get_series('WTREGEN')       # Treasury General Account
-    rrp = fred.get_series('RRPONTSYD')     # Reverse Repo Facility
-    real_rate = fred.get_series('DFII10')  # 10Y Real TIPS Yield
-    yield_curve = fred.get_series('T10Y2Y')# Yield Curve 10Y-2Y
+    walcl = fred.get_series('WALCL', observation_start=start_date)        # Fed Total Assets, $ millions
+    tga = fred.get_series('WTREGEN', observation_start=start_date)        # Treasury General Account, $ millions
+    rrp = fred.get_series('RRPONTSYD', observation_start=start_date)      # Reverse Repo Facility, $ billions
+    real_rate = fred.get_series('DFII10', observation_start=start_date)   # 10Y Real TIPS Yield
+    yield_curve = fred.get_series('T10Y2Y', observation_start=start_date) # Yield Curve 10Y-2Y
+    dollar = fred.get_series('DTWEXBGS', observation_start=start_date)     # Broad US Dollar Index
+    nfci = fred.get_series('NFCI', observation_start=start_date)           # Financial Conditions Index
     
     df_macro = pd.DataFrame({
         'Fed_Assets': walcl,
         'TGA': tga,
         'RRP': rrp,
         'Real_Rate': real_rate,
-        'Yield_Curve': yield_curve
-    }).dropna()
+        'Yield_Curve': yield_curve,
+        'Dollar_Index': dollar,
+        'NFCI': nfci,
+    }).sort_index().ffill().dropna()
     
-    # Net Liquidity in Trillions
-    df_macro['Net_Liquidity'] = (df_macro['Fed_Assets'] - (df_macro['TGA'] + df_macro['RRP'])) / 1_000_000
+    # Convert RRP from billions to millions before calculating liquidity in trillions.
+    df_macro['Net_Liquidity'] = (
+        df_macro['Fed_Assets'] - df_macro['TGA'] - (df_macro['RRP'] * 1_000)
+    ) / 1_000_000
     
     # Asset Prices (Daily)
-    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'BIL']
-    prices = yf.download(tickers, start=start_date)['Close']
+    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'QQQ', 'BIL']
+    prices = yf.download(tickers, start=start_date, auto_adjust=False)['Close']
     
     merged = pd.concat([df_macro, prices], axis=1).ffill().dropna()
     return merged
@@ -87,47 +93,92 @@ def load_live_prices():
 try:
     data = load_market_data()
     latest = data.iloc[-1]
-    prev_30d = data.iloc[-30]
+    four_weeks_ago = data.loc[data.index <= data.index[-1] - timedelta(days=28)].iloc[-1]
     
     # Rate of Change / Metrics
-    liq_change_30d = ((latest['Net_Liquidity'] - prev_30d['Net_Liquidity']) / prev_30d['Net_Liquidity']) * 100
-    real_rate_change = latest['Real_Rate'] - prev_30d['Real_Rate']
+    liq_change_30d = ((latest['Net_Liquidity'] - four_weeks_ago['Net_Liquidity']) / four_weeks_ago['Net_Liquidity']) * 100
+    real_rate_change = latest['Real_Rate'] - four_weeks_ago['Real_Rate']
     current_yc = latest['Yield_Curve']
+    btc_200d_average = data['BTC-USD'].tail(200).mean()
+
+    # Five equally weighted BTC regime signals: +1 supportive, -1 unfavorable.
+    btc_signals = [
+        {
+            'Factor': 'Net liquidity',
+            'Score': 1 if latest['Net_Liquidity'] > four_weeks_ago['Net_Liquidity'] else -1,
+            'Reading': f"{liq_change_30d:+.2f}% over 4 weeks",
+            'Supportive when': 'Rising',
+        },
+        {
+            'Factor': '10Y real yield',
+            'Score': 1 if latest['Real_Rate'] < four_weeks_ago['Real_Rate'] else -1,
+            'Reading': f"{real_rate_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'US dollar',
+            'Score': 1 if latest['Dollar_Index'] < four_weeks_ago['Dollar_Index'] else -1,
+            'Reading': f"{latest['Dollar_Index'] - four_weeks_ago['Dollar_Index']:+.2f} over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'Financial conditions',
+            'Score': 1 if latest['NFCI'] < four_weeks_ago['NFCI'] else -1,
+            'Reading': f"{latest['NFCI'] - four_weeks_ago['NFCI']:+.3f} over 4 weeks",
+            'Supportive when': 'Loosening',
+        },
+        {
+            'Factor': 'BTC price trend',
+            'Score': 1 if latest['BTC-USD'] > btc_200d_average else -1,
+            'Reading': f"${latest['BTC-USD']:,.0f} vs ${btc_200d_average:,.0f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
+    btc_score = sum(signal['Score'] for signal in btc_signals)
+
+    if btc_score >= 4:
+        outlook = 'Strongly Supportive'
+        badge_color = '🟢'
+        regime_desc = 'Most measured liquidity, rates, currency, credit, and price-trend signals favor Bitcoin.'
+    elif btc_score >= 2:
+        outlook = 'Moderately Supportive'
+        badge_color = '🟢'
+        regime_desc = 'More indicators support Bitcoin than oppose it, but the signal is not unanimous.'
+    elif btc_score >= -1:
+        outlook = 'Mixed / Neutral'
+        badge_color = '⚪'
+        regime_desc = 'The indicators disagree, so there is no strong directional BTC signal.'
+    elif btc_score >= -3:
+        outlook = 'Unfavorable'
+        badge_color = '🟠'
+        regime_desc = 'More indicators oppose Bitcoin than support it; conditions warrant caution.'
+    else:
+        outlook = 'Strongly Unfavorable'
+        badge_color = '🔴'
+        regime_desc = 'Most measured indicators currently create a difficult backdrop for Bitcoin.'
     
     st.title("Shripal's Macro Copilot: Everyday Market Regime")
     st.caption("A layman-friendly engine translating Federal Reserve and Treasury data into clear allocation decisions.")
     
-    # Dynamic Regime Logic
+    # Transparent BTC scoring model
     st.markdown("---")
-    st.subheader("Today's Weather Report for Your Capital")
-    
-    if current_yc < -0.1:
-        regime_title = "Defensive / Recession Warning"
-        regime_desc = "The bond yield curve is inverted. Lending is tight, and economic risk is elevated."
-        best_asset = "Safe Haven Cash & Short-Term Bills (BIL / Ultra-Short Treasuries)"
-        badge_color = "🔴 High Caution"
-    elif liq_change_30d > 0.5:
-        regime_title = "Liquidity Tide Rising (Risk-On)"
-        regime_desc = "The U.S. financial system is expanding cash reserves. Money is actively flowing outward seeking returns."
-        best_asset = "High-Growth & Risk Assets: Bitcoin (BTC) & Equities (SPY / QQQ)"
-        badge_color = "🟢 Full Green Light"
-    elif latest['Real_Rate'] < 1.6 and real_rate_change < 0:
-        regime_title = "Monetary Debasement / Real Yield Erosion"
-        regime_desc = "Holding pure cash in real terms is losing value. Capital is protecting purchasing power."
-        best_asset = "Store of Value: Gold (GLD) & Hard Assets"
-        badge_color = "🟡 Inflation Hedge"
-    else:
-        regime_title = "Neutral / Transition Phase"
-        regime_desc = "Liquidity is flat. Markets are driven by specific sector fundamentals rather than a broad monetary tide."
-        best_asset = "Balanced Stance: Energy (USO), High Dividend Stocks, Balanced Index"
-        badge_color = "⚪ Neutral"
+    st.subheader("Bitcoin Macro Signal")
 
-    col_a, col_b, col_c = st.columns([1, 1.5, 1])
-    col_a.metric("Current Regime", badge_color, regime_title)
-    col_b.metric("Favored Asset Class", best_asset)
-    col_c.metric("30-Day Liquidity Shift", f"{liq_change_30d:+.2f}%", delta_color="normal")
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("BTC Score", f"{btc_score:+d} / 5")
+    col_b.metric("BTC Outlook", f"{badge_color} {outlook}")
+    col_c.metric("4-Week Liquidity Shift", f"{liq_change_30d:+.2f}%", delta_color="normal")
     
-    st.info(f"**Actionable Takeaway:** {regime_desc}")
+    st.info(f"**What it means:** {regime_desc}")
+
+    signal_table = pd.DataFrame(btc_signals)
+    signal_table['Signal'] = signal_table['Score'].map({1: '✅ Supportive (+1)', -1: '❌ Unfavorable (-1)'})
+    st.dataframe(
+        signal_table[['Factor', 'Signal', 'Reading', 'Supportive when']],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption("This is a market-regime indicator, not a BTC price forecast or investment recommendation.")
 
     # Near-real-time market prices
     st.markdown("---")
@@ -164,13 +215,13 @@ try:
     c1.metric(
         label="Net US Liquidity", 
         value=f"${latest['Net_Liquidity']:.2f} T", 
-        delta=f"{liq_change_30d:+.2f}% (30d)",
+        delta=f"{liq_change_30d:+.2f}% (4 weeks)",
         help="Fed Assets minus Treasury Cash & Reverse Repo. Rising = Fuel for Crypto & Stocks."
     )
     c2.metric(
         label="10Y Real TIPS Rate", 
         value=f"{latest['Real_Rate']:.2f}%", 
-        delta=f"{real_rate_change:+.2f}% (30d)",
+        delta=f"{real_rate_change:+.2f} pp (4 weeks)",
         delta_color="inverse",
         help="Real return above inflation. Dropping real rates trigger Gold rallies."
     )
@@ -184,7 +235,7 @@ try:
     c4.metric(
         label="Bitcoin Price (USD)", 
         value=f"${latest['BTC-USD']:,.0f}", 
-        delta=f"{((latest['BTC-USD'] - prev_30d['BTC-USD']) / prev_30d['BTC-USD']) * 100:+.2f}% (30d)"
+        delta=f"{((latest['BTC-USD'] - four_weeks_ago['BTC-USD']) / four_weeks_ago['BTC-USD']) * 100:+.2f}% (4 weeks)"
     )
 
     # Interactive Chart
