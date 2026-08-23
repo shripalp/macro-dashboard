@@ -41,6 +41,8 @@ def load_market_data():
     wti = fred.get_series('DCOILWTICO', observation_start=start_date)         # WTI crude oil, dollars per barrel
     cpi = fred.get_series('CPIAUCSL', observation_start=start_date)           # Consumer Price Index
     nominal_10y = fred.get_series('DGS10', observation_start=start_date)      # Nominal 10Y Treasury yield
+    nominal_30y = fred.get_series('DGS30', observation_start=start_date)      # Nominal 30Y Treasury yield
+    breakeven_10y = fred.get_series('T10YIE', observation_start=start_date)   # 10Y inflation expectations
     credit_spread = fred.get_series('BAMLH0A0HYM2', observation_start=start_date) # High-yield credit spread
     
     df_macro = pd.DataFrame({
@@ -58,6 +60,8 @@ def load_market_data():
         'WTI': wti,
         'CPI': cpi,
         'Nominal_10Y': nominal_10y,
+        'Nominal_30Y': nominal_30y,
+        'Breakeven_10Y': breakeven_10y,
         'Credit_Spread': credit_spread,
     }).sort_index().ffill().dropna()
     
@@ -74,7 +78,7 @@ def load_market_data():
     )
     
     # Asset Prices (Daily)
-    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD', 'QQQ', 'BIL']
+    tickers = ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD', 'TLT', 'QQQ', 'BIL']
     prices = yf.download(tickers, start=start_date, auto_adjust=False)['Close']
     
     merged = pd.concat([df_macro, prices], axis=1, sort=False).sort_index().ffill().dropna()
@@ -180,6 +184,8 @@ try:
     nfci_direction = 'tightening' if nfci_change > 0 else 'loosening' if nfci_change < 0 else 'flat'
     dollar_change = latest['Dollar_Index'] - four_weeks_ago['Dollar_Index']
     nominal_10y_change = latest['Nominal_10Y'] - four_weeks_ago['Nominal_10Y']
+    nominal_30y_change = latest['Nominal_30Y'] - four_weeks_ago['Nominal_30Y']
+    breakeven_change = latest['Breakeven_10Y'] - four_weeks_ago['Breakeven_10Y']
     credit_spread_change = latest['Credit_Spread'] - four_weeks_ago['Credit_Spread']
     current_inflation = ((latest['CPI'] / one_year_ago['CPI']) - 1) * 100
     prior_inflation = ((thirteen_weeks_ago['CPI'] / fifteen_months_ago['CPI']) - 1) * 100
@@ -187,7 +193,7 @@ try:
     current_yc = latest['Yield_Curve']
     averages_200d = {
         symbol: data[symbol].tail(200).mean()
-        for symbol in ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD']
+        for symbol in ['BTC-USD', 'GLD', 'USO', 'SPY', 'SCHD', 'TLT']
     }
 
     # US and global liquidity split one point to avoid double-counting liquidity.
@@ -365,6 +371,39 @@ try:
             'Supportive when': 'Above 200D avg',
         },
     ]
+
+    treasury_signals = [
+        {
+            'Factor': '30Y Treasury yield',
+            'Score': 1 if nominal_30y_change < 0 else -1,
+            'Reading': f"{nominal_30y_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': '10Y inflation expectations',
+            'Score': 1 if breakeven_change < 0 else -1,
+            'Reading': f"{breakeven_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Falling',
+        },
+        {
+            'Factor': 'CPI inflation trend',
+            'Score': 1 if inflation_change < 0 else -1,
+            'Reading': f"{current_inflation:.2f}% YoY ({inflation_change:+.2f} pp vs 3 months ago)",
+            'Supportive when': 'Decelerating',
+        },
+        {
+            'Factor': 'Credit stress / safety demand',
+            'Score': 1 if credit_spread_change > 0 else -1,
+            'Reading': f"{credit_spread_change:+.2f} pp over 4 weeks",
+            'Supportive when': 'Credit spreads rising',
+        },
+        {
+            'Factor': 'TLT price trend',
+            'Score': 1 if latest['TLT'] > averages_200d['TLT'] else -1,
+            'Reading': f"${latest['TLT']:,.2f} vs ${averages_200d['TLT']:,.2f} 200D avg",
+            'Supportive when': 'Above 200D avg',
+        },
+    ]
     
     st.title("Shripal's Macro Copilot: Everyday Market Regime")
     st.caption("A layman-friendly engine translating Federal Reserve and Treasury data into clear allocation decisions.")
@@ -372,8 +411,11 @@ try:
     # Reusable asset-specific scoring models
     st.markdown("---")
     st.subheader("Asset Macro Signals")
-    btc_tab, gold_tab, oil_tab, sp500_tab, dividend_tab = st.tabs(
-        ["Bitcoin", "Gold", "Oil", "S&P 500", "High Dividend"]
+    btc_tab, gold_tab, oil_tab, sp500_tab, dividend_tab, treasury_tab = st.tabs(
+        [
+            "Bitcoin (BTC)", "Gold ETF (GLD)", "Oil ETF (USO)",
+            "US Stocks (SPY)", "Dividend Stocks (SCHD)", "Long Treasuries (TLT)",
+        ]
     )
 
     with btc_tab:
@@ -401,6 +443,11 @@ try:
         render_signal_panel(
             "High Dividend", "SCHD", dividend_signals,
             latest['SCHD'], four_weeks_ago['SCHD'],
+        )
+    with treasury_tab:
+        render_signal_panel(
+            "Long Treasuries", "TLT", treasury_signals,
+            latest['TLT'], four_weeks_ago['TLT'],
         )
 
     st.caption("These are market-regime indicators, not price forecasts or investment recommendations.")
