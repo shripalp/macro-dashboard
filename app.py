@@ -41,6 +41,34 @@ def load_market_data():
     merged = pd.concat([df_macro, prices], axis=1).ffill().dropna()
     return merged
 
+@st.cache_data(ttl=60)
+def load_live_prices():
+    """Fetch near-real-time prices and the previous close for dashboard cards."""
+    symbols = {
+        'Gold': 'GC=F',
+        'Oil': 'CL=F',
+        'Bitcoin': 'BTC-USD',
+        'QQQ': 'QQQ',
+        'SPY': 'SPY',
+    }
+    quotes = {}
+
+    for name, symbol in symbols.items():
+        ticker = yf.Ticker(symbol)
+        intraday = ticker.history(period='1d', interval='1m', auto_adjust=False)
+        daily = ticker.history(period='5d', interval='1d', auto_adjust=False)
+
+        if intraday.empty or daily.empty:
+            raise ValueError(f"No current price available for {name} ({symbol})")
+
+        current_price = float(intraday['Close'].dropna().iloc[-1])
+        daily_closes = daily['Close'].dropna()
+        previous_close = float(daily_closes.iloc[-2] if len(daily_closes) > 1 else daily_closes.iloc[-1])
+        change_pct = ((current_price - previous_close) / previous_close) * 100
+        quotes[name] = {'price': current_price, 'change_pct': change_pct}
+
+    return quotes
+
 try:
     data = load_market_data()
     latest = data.iloc[-1]
@@ -85,6 +113,29 @@ try:
     col_c.metric("30-Day Liquidity Shift", f"{liq_change_30d:+.2f}%", delta_color="normal")
     
     st.info(f"**Actionable Takeaway:** {regime_desc}")
+
+    # Near-real-time market prices
+    st.markdown("---")
+    st.subheader("Live Market Prices")
+    live_prices = load_live_prices()
+    price_columns = st.columns(5)
+    price_formats = {
+        'Gold': '${:,.2f}',
+        'Oil': '${:,.2f}',
+        'Bitcoin': '${:,.0f}',
+        'QQQ': '${:,.2f}',
+        'SPY': '${:,.2f}',
+    }
+
+    for column, name in zip(price_columns, price_formats):
+        quote = live_prices[name]
+        column.metric(
+            label=name,
+            value=price_formats[name].format(quote['price']),
+            delta=f"{quote['change_pct']:+.2f}% vs previous close",
+        )
+
+    st.caption("Near-real-time Yahoo Finance quotes; exchange delays may apply. Gold and oil use front-month futures.")
     
     # 4 Dial Summary Cards
     st.markdown("---")
