@@ -22,6 +22,30 @@ if not FRED_API_KEY:
 
 fred = Fred(api_key=FRED_API_KEY)
 
+INDICATOR_EXPLANATIONS = {
+    'US net liquidity': 'An estimate of dollars available in the US financial system. More liquidity can support asset prices.',
+    'Global liquidity proxy': 'The combined size of the Fed, ECB, and Bank of Japan balance sheets after converting them to US dollars.',
+    '10Y real yield': 'The return on a 10-year Treasury after expected inflation. Lower real yields make non-cash assets more attractive.',
+    'US dollar': 'The dollar measured against a broad group of currencies. A weaker dollar often helps globally traded assets.',
+    'Financial conditions': 'A broad measure of how easy or difficult it is to borrow, invest, and obtain credit.',
+    'BTC price trend': 'Compares Bitcoin with its average price over the last 200 days to identify its longer-term direction.',
+    'Inflation trend': 'Shows whether consumer-price inflation is accelerating or slowing compared with three months ago.',
+    'CPI inflation trend': 'Shows whether consumer-price inflation is accelerating or slowing compared with three months ago.',
+    'GLD price trend': 'Compares the gold ETF with its 200-day average to identify its longer-term direction.',
+    'WTI price trend': 'Compares the US crude-oil benchmark with its 200-day average.',
+    'Yield curve': 'The difference between long- and short-term Treasury yields. An inverted curve can warn of economic stress.',
+    'USO price trend': 'Compares the oil ETF with its 200-day average. USO can differ from spot oil because it owns futures contracts.',
+    'High-yield credit spread': 'The extra interest risky companies pay over Treasuries. A wider spread usually means investors are more worried.',
+    'SPY price trend': 'Compares the S&P 500 ETF with its 200-day average to identify its longer-term direction.',
+    '10Y nominal yield': 'The quoted 10-year Treasury yield before subtracting inflation. It competes with dividend income.',
+    'SCHD relative strength': 'Shows whether the dividend ETF is performing better or worse than the broad stock market.',
+    'SCHD price trend': 'Compares the dividend ETF with its 200-day average to identify its longer-term direction.',
+    '30Y Treasury yield': 'The interest rate on very long-term US government debt. TLT prices generally rise when this yield falls.',
+    '10Y inflation expectations': 'The bond market\'s estimate of average inflation over the next 10 years.',
+    'Credit stress / safety demand': 'Rising corporate-bond stress can push investors toward safer US Treasuries.',
+    'TLT price trend': 'Compares the long-term Treasury ETF with its 200-day average to identify its longer-term direction.',
+}
+
 @st.cache_data(ttl=21600)  # Caches for 6 hours
 def load_market_data():
     start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
@@ -164,6 +188,13 @@ def render_signal_panel(asset_name, symbol, signals, current_price, four_week_pr
         width='stretch',
         hide_index=True,
     )
+    with st.expander("Plain-English guide to these indicators"):
+        for signal in signals:
+            explanation = INDICATOR_EXPLANATIONS.get(
+                signal['Factor'],
+                'This indicator provides context about the current market environment.',
+            )
+            st.markdown(f"**{signal['Factor']}:** {explanation}")
 
 try:
     data = load_market_data()
